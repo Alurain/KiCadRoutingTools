@@ -1127,8 +1127,14 @@ elif TWO_PAGE_PLAN and not NO_HINTS \
     # pass even when the plan's schedule called them F-page (SDQ14:
     # the braid refuses it on F at K32 AND K35, margin 6, no rip
     # victim; the human's answer is a B dogbone at the ball).
-    for x in os.environ.get('TP_SPLIT_NETS', '').split(','):
-        if x and x in names and x not in split_targets:
+    forced_split = [x for x in os.environ.get('TP_SPLIT_NETS', '').split(',')
+                    if x and x in names]
+    if forced_split and os.environ.get('TP_SPLIT_ONLY') == '1':
+        # the RIVER plan's B river asks for B berths and nothing else
+        # does: the plan's own page guesses are not the braid's
+        split_targets = []
+    for x in forced_split:
+        if x not in split_targets:
             split_targets.append(x)
     # CAPACITY GATE: try the PLAIN engine first and LOOK at what it
     # did. At K21/K28 the all-F fanout is clean and complete, and the
@@ -1162,7 +1168,7 @@ elif TWO_PAGE_PLAN and not NO_HINTS \
                   '--clearance-margin', '0.1'],
                  capture_output=True, text=True)
     clean_ = 'NO DRC VIOLATIONS' in (r_.stdout + r_.stderr)
-    if clean_ and not fl_p:
+    if clean_ and not fl_p and not forced_split:
         print('  split GATE: plain engine fanout is DRC-clean and '
               'complete -- adopted, no B pass needed')
         # ...but a FORCED source split still applies. The K28 flank
@@ -1239,7 +1245,8 @@ elif TWO_PAGE_PLAN and not NO_HINTS \
         obeyed(tr_p, choice, dst_pad, 'berth')
         sys.exit(0)
     print('  split GATE: plain engine fanout is '
-          + ('INCOMPLETE' if fl_p else 'DIRTY') + ' -- B pass proceeds')
+          + ('INCOMPLETE' if fl_p else 'DIRTY' if not clean_ else 'clean, but B berths were ASKED for')
+          + ' -- B pass proceeds')
     pcb_w = parse_kicad_pcb(board)
     cfg_w = te.cn.make_config(pcb_w, te.TRACK, te.CLEAR, te.VIA_SIZE,
                               te.VIA_DRILL, grid_step=0.025)

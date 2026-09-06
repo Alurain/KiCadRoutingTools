@@ -218,15 +218,23 @@ def cross_reserve(ctx, nm):
                 if page is not None and len(poly) >= 2:
                     out.extend((p, q, page) for p, q in zip(poly, poly[1:]))
                     continue
+            # BRAID_XRES_END (mm, default 1.5): how much of each end is
+            # reserved on the end's layer. A page lane whose page is
+            # the OTHER layer leaves its end layer at its birth /
+            # landing via (~0.45 mm), so 1.5 mm of F under a B river's
+            # teeth walled the F river's launches where the two rivers'
+            # teeth interleave (K41: S river 9 refusals with the stamps,
+            # 0 without them).
+            end_len = float(os.environ.get('BRAID_XRES_END', '1.5'))
             for pts, lay in ((poly, ctx.tooth_layer[om]),
                              (list(reversed(poly)), ctx.dest_layer[om])):
                 acc = 0.0
                 for p, q in zip(pts, pts[1:]):
                     d = math.hypot(q[0] - p[0], q[1] - p[1])
-                    if acc >= 1.5:
+                    if acc >= end_len:
                         break
-                    if acc + d > 1.5 and d > 1e-9:
-                        t = (1.5 - acc) / d
+                    if acc + d > end_len and d > 1e-9:
+                        t = (end_len - acc) / d
                         q = (p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t)
                     out.append((p, q, lay))
                     acc += d
@@ -728,13 +736,27 @@ class Corridor:
                 ends.append(p)
         lo_, hi_ = min(oa, ob), max(oa, ob)
 
+        # a foreign FREE END is in a leg's way when the leg would run
+        # closer than the legal minimum (track + clearance, as for a
+        # leg already placed) -- not a whole lane pitch. Teeth along a
+        # face sit a half-pitch apart (0.3-0.4 mm at K41), so at LPITCH
+        # every candidate clashed and the tie-break parked SA9's leg
+        # 0.05 mm from SA5's tooth, stamped on both layers: SA5 refused
+        # at its first cell. BRAID_END_CLASH=pitch restores the old rule.
+        # default = the recorded chain's rule (a pitch); BRAID_END_CLASH=min
+        # = the legal minimum. Measured alone on the ladder: K35 1 -> 1
+        # open but 82 -> 97 vias, K41 4 -> 5 open; with rivers it helps
+        # (rv41fb0 11 open -> rv41fb 9), so the river config turns it on.
+        end_clash = (TRACK + CLEAR + 0.02 if os.environ.get('BRAID_END_CLASH') == 'min'
+                     else LPITCH - 1e-6)
+
         def clash(s):
             # a jog is a whole pitch, so an end or a leg exactly a pitch
             # away is clear -- compared with a tolerance, or the float
             # residue of 2.6 - 0.35 vs 1.6 + 0.35 reads as a clash and
             # sends the leg two pitches off, over the next tooth
             n = sum(1 for p in ends
-                    if abs(p[0] - s) < LPITCH - 1e-6
+                    if abs(p[0] - s) < end_clash
                     and lo_ - 0.05 < p[1] < hi_ + 0.05)
             n += sum(1 for (ps, plo, phi) in placed
                      if abs(ps - s) < TRACK + 0.1 + 0.02 and plo < hi_ and phi > lo_)
@@ -1209,24 +1231,63 @@ class Corridor:
                 own_p = sched.page.get(om) if sched else None
                 for (s_l, owner) in hits:
                     Lg = self.leg_layer[owner]
-                    if own_p is not None and own_p != Lg:
-                        continue             # different layers: free
-                    other = 'B.Cu' if Lg == 'F.Cu' else 'F.Cu'
                     a = s_l - LEG_REQ
                     b = s_l + LEG_REQ
                     if om in self.exit_block:
                         b = min(b, self.exit_leg_s[om] - 0.03)
                     else:
                         b = min(b, self.se[om][0] - 0.03)
-                    if b > a:
-                        ivs.setdefault(om, []).append((a, b, other))
+                    if b <= a:
+                        continue
+                    if own_p is not None and own_p != Lg \
+                            and os.environ.get('BRAID_STAY_PAGE', '0') != '1':
+                        continue             # pre-0906 behaviour (A/B)
+                    if own_p is not None and own_p != Lg:
+                        # different layers: free for the LEG -- but only
+                        # if the crossed page lane really is on its page
+                        # there. Past s1 every lane may take the back
+                        # layer (bwin opens at s1 - 0.1) and its page
+                        # req has ended, so virtual_of stamped its exit
+                        # run on BOTH layers and the "free" crossing was
+                        # a wall: K41's south river, 8 of 10 joiners
+                        # refused, SWE's backward search boxed under the
+                        # SA2 line on both layers. Require the crossed
+                        # lane on its own page under the leg (it costs
+                        # it nothing: that is where it already is).
+                        # BRAID_STAY_PAGE=1 (default OFF: alone on the
+                        # ladder it routes the joiner class and loses
+                        # elsewhere -- K35 1 -> 3 open, K41 4 -> 6; the
+                        # river configuration turns it on) --
+                        # stopping a via's room (0.45) short of its own
+                        # corner or stub when it must change layer
+                        # there: cut at 0.03 the stretch walled the
+                        # crossed lane's own dive (K41 SDQ10/SDQ2, K35
+                        # SDQ15/SDQ8 newly refused).
+                        if om in self.exit_block:
+                            nxt_L = self.leg_layer.get(om, own_p)
+                        else:
+                            nxt_L = self.ctx.dest_layer[om]
+                        if nxt_L != own_p:
+                            b = min(b, (self.exit_leg_s[om] if om in self.exit_block
+                                        else self.se[om][0]) - 0.45)
+                        if b > a:
+                            ivs.setdefault(om, []).append((a, b, own_p))
+                        continue
+                    other = 'B.Cu' if Lg == 'F.Cu' else 'F.Cu'
+                    ivs.setdefault(om, []).append((a, b, other))
             for om, vv in ivs.items():
                 kept_iv = [iv for iv in vv
                            if not any(o[2] != iv[2] and iv[0] < o[1]
                                       and o[0] < iv[1]
                                       for o in vv if o is not iv)]
                 if kept_iv:
-                    leg_req_min[om] = min(a for (a, _b, _L) in kept_iv)
+                    own_p = sched.page.get(om) if sched else None
+                    dives = [a for (a, _b, L) in kept_iv if L != own_p]
+                    if dives:
+                        # only a CONFLICTING (dive) stretch cuts the
+                        # page req short; a stay-on-page stretch is the
+                        # page req continued
+                        leg_req_min[om] = min(dives)
                     req[om].extend(kept_iv)
         else:
             for om, legs_s in crossings.items():
@@ -3096,13 +3157,30 @@ def setup(board, names, dest, log, cluster=6.0):
         ps = pcb.footprints[ref].pads
         return (sum(p.global_x for p in ps) / len(ps),
                 sum(p.global_y for p in ps) / len(ps))
-    groups = cr.cluster_corridors(
-        names, ctx.paths, {nm: ends[nm][0] for nm in names},
-        {nm: ends[nm][1] for nm in names}, pad_obs.seg_clear, D=cluster,
-        log=log, spine_fn=lambda core: spine_of(core, relax=False),
-        dest_ref={nm: ends[nm][2] for nm in names},
-        centres={nm: centre_of(ends[nm][2]) for nm in names},
-        src_centres={nm: centre_of(ctx.src_ref[nm]) for nm in names})
+    if os.environ.get('BRAID_RIVERS', '') == 'face':
+        # RIVERS (#622, 0906): corridors by the DESTINATION FACE each
+        # stub leaves through (its escape direction, read off the
+        # copper) and the side of the destination array the taut path
+        # passes -- one river per comb, instead of single-linkage
+        # clustering that chains every face of a dense destination
+        # into one corridor of 36 with 30 side exits. Nothing here
+        # names a face: the key is the stub's own direction vector
+        # quantised to its dominant axis. Each river then gets a PAGE:
+        # rivers are coloured largest first, F unless the river's taut
+        # paths cross an F river's (majority of member pairs), then B
+        # unless it also crosses a B river, else left to the corridor's
+        # own schedule. Members whose order disagrees inside a river are
+        # demoted to swimmers by the Schedule as usual.
+        groups, ctx.pages = river_groups(ctx, names, ends, centre_of, log,
+                                         board=board)
+    else:
+        groups = cr.cluster_corridors(
+            names, ctx.paths, {nm: ends[nm][0] for nm in names},
+            {nm: ends[nm][1] for nm in names}, pad_obs.seg_clear, D=cluster,
+            log=log, spine_fn=lambda core: spine_of(core, relax=False),
+            dest_ref={nm: ends[nm][2] for nm in names},
+            centres={nm: centre_of(ends[nm][2]) for nm in names},
+            src_centres={nm: centre_of(ctx.src_ref[nm]) for nm in names})
     log(f'{len(groups)} corridor(s): ' + '  '.join(
         f'[{len(g)}] {",".join(g)}' for g in groups))
     # 0.025 grid: the fanout packs stub ends at 0.25, which is the legal
@@ -3140,6 +3218,117 @@ def setup(board, names, dest, log, cluster=6.0):
                      for nm in names}
     ctx.laid = []
     return ctx, groups
+
+
+
+def _polys_cross(P, Q):
+    """Do two polylines intersect (proper segment crossing)?"""
+    for a, b in zip(P, P[1:]):
+        for c, d in zip(Q, Q[1:]):
+            o1 = _orient(a[0], a[1], b[0], b[1], c[0], c[1])
+            o2 = _orient(a[0], a[1], b[0], b[1], d[0], d[1])
+            o3 = _orient(c[0], c[1], d[0], d[1], a[0], a[1])
+            o4 = _orient(c[0], c[1], d[0], d[1], b[0], b[1])
+            if o1 * o2 < 0 and o3 * o4 < 0:
+                return True
+    return False
+
+
+def river_groups(ctx, names, ends, centre_of, log, board=None):
+    """Corridors by (destination ref, stub face, passing side) and a
+    page per river -- see setup()."""
+    def face_of(d):
+        if not d:
+            return 'none'
+        return ('x+' if d[0] > 0 else 'x-') if abs(d[0]) >= abs(d[1]) \
+            else ('y+' if d[1] > 0 else 'y-')
+
+    def pass_side(path, c):
+        best, sgn = None, 0
+        for a, b in zip(path, path[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L2 = dx * dx + dy * dy
+            if L2 < 1e-12:
+                continue
+            tt = max(0.0, min(1.0, ((c[0] - a[0]) * dx + (c[1] - a[1]) * dy) / L2))
+            px, py = a[0] + tt * dx, a[1] + tt * dy
+            dd = math.hypot(px - c[0], py - c[1])
+            if best is None or dd < best:
+                best = dd
+                cr_ = dx * (c[1] - a[1]) - dy * (c[0] - a[0])
+                sgn = 1 if cr_ > 0 else -1
+        return sgn
+    keyed = {}
+    for nm in names:
+        dref = ends[nm][2]
+        d = ctx.stub_dir.get(nm) if isinstance(ctx.stub_dir, dict) else None
+        k = (dref, face_of(d), pass_side(ctx.paths[nm], centre_of(dref)))
+        keyed.setdefault(k, []).append(nm)
+    groups = sorted(keyed.values(), key=len, reverse=True)
+    # BRAID_RIVER_MIN=n: a river smaller than n is not a river -- it is
+    # folded into the big river it crosses most (else the largest), so
+    # its lanes are scheduled instead of routed band-free last (the
+    # 2-5 net FREE-CORNER groups lost SA1 / SDQ12 / SA6 at K41).
+    rmin = int(os.environ.get('BRAID_RIVER_MIN', '0') or 0)
+    if rmin > 1 and len(groups) > 1:
+        big = [g for g in groups if len(g) >= rmin] or [groups[0]]
+        small = [g for g in groups if len(g) < rmin and g is not big[0]]
+        for g in small:
+            def nx(h):
+                return sum(1 for a in g for b in h
+                           if _polys_cross(ctx.paths[a], ctx.paths[b]))
+            host = max(big, key=lambda h: (nx(h), len(h)))
+            log(f'  river of {len(g)} ({",".join(g)}) folded into the '
+                f'{len(host)}-net river ({nx(host)} crossing pairs)')
+            host.extend(g)
+        groups = sorted(big, key=len, reverse=True)
+        keyed = {k: g for k, g in keyed.items() if g in groups}
+    # pages: colour rivers largest first by the crossing graph. Two
+    # rivers CROSS when more than BRAID_RIVER_XT of their member pairs'
+    # taut paths intersect (default 1/3; K41's south and north rivers
+    # cross in 19% of pairs -- 46 crossings -- and both on F was 46
+    # unplanned F-F crossings at the launch).
+    xt = float(os.environ.get('BRAID_RIVER_XT', '0.3334'))
+    page_of = {}
+    for gi, g in enumerate(groups):
+        def crosses(h):
+            n = x = 0
+            for a in g:
+                for b in h:
+                    n += 1
+                    if _polys_cross(ctx.paths[a], ctx.paths[b]):
+                        x += 1
+            return n and x > xt * n
+        blockedF = any(crosses(h) for hj, h in enumerate(groups)
+                       if hj < gi and page_of.get(hj) == 'F.Cu')
+        blockedB = any(crosses(h) for hj, h in enumerate(groups)
+                       if hj < gi and page_of.get(hj) == 'B.Cu')
+        page_of[gi] = None if (blockedF and blockedB) else ('B.Cu' if blockedF else 'F.Cu')
+    pages = {}
+    for gi, g in enumerate(groups):
+        for nm in g:
+            pages[nm] = page_of[gi]
+    keys = {id(g): k for k, g in keyed.items()}
+    log('rivers: ' + '  '.join(
+        f'[{len(g)}] {keys[id(g)][1]}/{keys[id(g)][2]:+d} page {(page_of[gi] or "free")[:1]}'
+        for gi, g in enumerate(groups)))
+    if board and os.environ.get('BRAID_RIVERS_OUT', '1') == '1':
+        # the river plan BESIDE the board, for the fanout stage: which
+        # nets ride which river and page (a B river wants B berths)
+        import json as _json
+        with open(os.path.splitext(board)[0] + '.rivers.json', 'w',
+                  encoding='utf-8') as _f:
+            _json.dump({'corridors': groups,
+                        'pages': {gi: page_of[gi] for gi in range(len(groups))},
+                        'nets': pages}, _f, indent=1)
+    if os.environ.get('BRAID_RIVER_PAGES', '1') != '1':
+        pages = None
+    if os.environ.get('BRAID_RIVER_ORDER', 'big') == 'small':
+        # small rivers first: they route band-free (run_free) and lose
+        # nets when they come last against everything real; laid first
+        # they are real copper the big rivers' schedules route round
+        groups = list(reversed(groups))
+    return groups, pages
 
 
 def _chain_segs(segs, start):

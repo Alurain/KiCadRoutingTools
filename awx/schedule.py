@@ -118,13 +118,32 @@ class Schedule:
                         self.page[nm] = L
                         if L == 'F.Cu':
                             keep.add(i)
-            if log:
-                demoted = [nm for nm in self.launch
-                           if pages.get(nm) in ('F.Cu', 'B.Cu')
-                           and self.page[nm] is None]
-                if demoted:
-                    log(f'  pages sidecar: demoted to swimmers '
-                        f'(cross their own page here): {demoted}')
+            demoted = [nm for nm in self.launch
+                       if pages.get(nm) in ('F.Cu', 'B.Cu')
+                       and self.page[nm] is None]
+            if demoted and os.environ.get('BRAID_RIVERS'):
+                # RIVER pages are a PREFERENCE, not a verdict: a member
+                # that crosses its river's page here takes the OTHER
+                # page when it does not cross that page's members either
+                # (the corridor's own two-page split, seeded by the
+                # river), and only what fits neither is a swimmer. The
+                # verbatim rule made 11 of a 14-net river swimmers.
+                moved = []
+                for nm in demoted:
+                    other = 'B.Cu' if pages.get(nm) == 'F.Cu' else 'F.Cu'
+                    kept_o = [om for om in self.launch
+                              if self.page.get(om) == other]
+                    if all(not self.inverted(nm, om) for om in kept_o):
+                        self.page[nm] = other
+                        if other == 'F.Cu':
+                            keep.add(self.lidx[nm])
+                        moved.append(nm)
+                demoted = [nm for nm in demoted if nm not in moved]
+                if log and moved:
+                    log(f'  river pages: {moved} moved to the other page')
+            if log and demoted:
+                log(f'  pages sidecar: demoted to swimmers '
+                    f'(cross their own page here): {demoted}')
         else:
             # single page: the plain LIS (the form every recorded
             # ladder was routed with); two pages: weighted by the
