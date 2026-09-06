@@ -90,8 +90,16 @@ except Exception:
     CACHE = {}
 
 
+_BRAID_ENV = ','.join(f'{k}={os.environ[k]}' for k in sorted(os.environ)
+                      if k.startswith('BRAID_'))
+
+
 def ckey(forced):
-    return json.dumps(sorted(forced.items())) + f'|rescue{a.rescue}'
+    # the braid's own stages (BRAID_PACK, BRAID_NEGOTIATE, ...) change
+    # what an assignment realizes to: they are part of the key, so a
+    # search under new stages never reads a grade the old stages earned
+    return (json.dumps(sorted(forced.items())) + f'|rescue{a.rescue}'
+            + (f'|{_BRAID_ENV}' if _BRAID_ENV else ''))
 
 
 def realize(label, forced):

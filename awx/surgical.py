@@ -322,16 +322,32 @@ def relay_surgical(best, fo, nm, largs, stem):
     return key, rel, newfo
 
 
-def drc_partners(board, nm):
+def drc_partners(board, nm, pads=False):
     """Nets whose copper check_drc pairs with nm's on `board`, from
-    the checker's own report (grade at the loops' 0.1 / margin 0.1)."""
+    the checker's own report (grade at the loops' 0.1 / margin 0.1).
+    With `pads`, a pad the net grazes is a partner too ('pad:C8.1') --
+    for the fanout loop's verification only; every rip / relay caller
+    expects net names."""
     r = subprocess.run(
         [PY, os.path.join(HERE, '..', 'py_router', 'check_drc.py'), board,
          '--clearance', '0.1', '--clearance-margin', '0.1'],
         capture_output=True, text=True)
     out = set()
-    for m in re.finditer(r'^\s*(/\S.*?) <-> (/.*?)\s*$', r.stdout, re.M):
-        a_, b_ = (x.rsplit('/', 1)[-1] for x in m.groups())
+
+    def _name(x):
+        # '/DDR3 16x1/SDQ8', 'Seg:/DDR3 16x1/SDQ8', 'Via:/...', or a pad
+        # 'Pad:GND (C6.2)' -> the net's short name, or 'pad:C6.2'
+        x = x.strip()
+        mp = re.match(r'Pad:\S+ \(([^)]+)\)', x)
+        if mp:
+            return 'pad:' + mp.group(1)
+        return x.rsplit('/', 1)[-1]
+    for m in re.finditer(r'^\s*(\S.*?) <-> (\S.*?)\s*$', r.stdout, re.M):
+        a_, b_ = (_name(x) for x in m.groups())
+        if m.group(1).startswith(('Ends:', 'Checking')):
+            continue  # coordinate / banner lines, not a pair
+        if not pads and (a_.startswith('pad:') or b_.startswith('pad:')):
+            continue
         if a_ == nm and b_ != nm:
             out.add(b_)
         elif b_ == nm and a_ != nm:
@@ -407,9 +423,13 @@ def stub_asks(board, names, refs=('U1', 'DU1'), reach=1.6):
             if nid not in ends or r > ends[nid][0]:
                 ends[nid] = (r, x, y, lay.get((nid, x, y), 'F.Cu'))
         for nid, (_r, x, y, L) in ends.items():
-            dist = {'left': abs(x - bb[0]), 'right': abs(x - bb[2]),
-                    'up': abs(y - bb[1]), 'down': abs(y - bb[3])}
-            side = min(dist, key=dist.get)
+            # the face the stub LEAVES through: the edge the end lies
+            # farthest beyond (a corner end -- left of the array and
+            # above it -- is not the nearest edge's, it is the edge
+            # it overshoots most)
+            exc = {'left': bb[0] - x, 'right': x - bb[2],
+                   'up': bb[1] - y, 'down': y - bb[3]}
+            side = max(exc, key=exc.get)
             coord = y if side in ('left', 'right') else x
             out.setdefault(short[nid], {})[ref] = (side, round(coord, 3), L)
     return out

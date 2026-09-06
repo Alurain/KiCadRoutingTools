@@ -69,7 +69,10 @@ for label, largs in cands:
     board, group = r
     g, opens = sg.grade_full(board, NETS)
     say(f'  {label}: group {group} -> {g} open {opens}')
-    if g[0] == 0 and g[1] == 0 and (gb is None or g < gb):
+    # closed = every net connected and NO NEW DRC (the board may carry
+    # DRC on nets outside the set: the bench's whole-array fanout grazes
+    # a cap pad -- a closure that adds none is a closure)
+    if g[0] == 0 and g[1] <= g0[1] and (gb is None or g < gb):
         best, gb = board, g
         keep = f'tmp/{a.tag}_{a.net}_closed.kicad_pcb'
         shutil.copy(board, keep)

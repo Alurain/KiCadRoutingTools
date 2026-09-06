@@ -34,6 +34,15 @@ r = subprocess.run([PY, os.path.join(HERE, '..', 'py_router',
                    capture_output=True, text=True)
 m = re.search(r'FOUND (\d+) DRC VIOLATIONS', r.stdout + r.stderr)
 ndrc = int(m.group(1)) if m else 0
+# ...and how many of them involve one of the run's own nets: the rest
+# is the board's (a whole-array fanout's grazes on other nets)
+kset = set(nets)
+ndrc_k = 0
+for line in (r.stdout + r.stderr).splitlines():
+    if '<->' in line and not line.strip().startswith(('Ends:', 'Checking')):
+        toks = set(re.findall(r'[A-Za-z0-9_+\-]+', line))
+        if toks & kset:
+            ndrc_k += 1
 r = subprocess.run([PY, os.path.join(HERE, 'via_census.py'), board,
                     ','.join(nets)], capture_output=True, text=True)
 m = re.search(r'TOTAL vias=(\d+) segs=(\d+)', r.stdout)
@@ -43,5 +52,5 @@ if m is None:
     sys.exit(2)
 print(f'GRADE {os.path.basename(board)} K={len(nets)} '
       f'open={len(opens)} drc={ndrc} vias={m.group(1) if m else "?"} '
-      f'segs={m.group(2) if m else "?"}'
+      f'segs={m.group(2) if m else "?"} k-net-drc={ndrc_k}'
       + (f'  open: {",".join(sorted(opens))}' if opens else ''))
